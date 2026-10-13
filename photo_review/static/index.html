@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="review-token" content="__TOKEN__">
+  <title>Photo Review</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='6' width='22' height='18' rx='3' fill='%23a3b8a8'/%3E%3Crect x='8' y='10' width='22' height='18' rx='3' fill='%2311603a'/%3E%3Ccircle cx='15' cy='16' r='2.5' fill='%23fff'/%3E%3Cpath d='M10 26l6-6 4 4 3-3 5 5z' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header>
+    <div class="topbar">
+      <div>
+        <h1>Photo Review</h1>
+        <div class="sub" id="subtitle">Loading...</div>
+      </div>
+      <div class="actions">
+        <button type="button" id="undoBtn" disabled title="Put the files from the last move back where they were">Undo last move</button>
+        <button type="button" id="moveBtn" class="danger" disabled title="Move files marked Move into _marked_for_delete">Move marked (0)</button>
+      </div>
+    </div>
+    <div class="folder-bar">
+      <input id="folderInput" type="text" placeholder="Folder to scan, e.g. C:\Users\you\Pictures" spellcheck="false" aria-label="Folder to scan">
+      <button type="button" id="browseBtn">Choose folder...</button>
+      <button type="button" id="scanBtn" class="primary">Scan</button>
+      <label class="inline-check"><input type="checkbox" id="forceScan"> Re-analyze every photo</label>
+      <button type="button" id="settingsBtn" aria-expanded="false">Settings</button>
+    </div>
+    <div class="progress" id="progress" hidden>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-text" id="progressText"></div>
+    </div>
+    <div class="settings" id="settings" hidden>
+      <label class="field">
+        <span>Strong match distance</span>
+        <input type="number" data-option="strong_threshold" min="0" max="192">
+        <small>0-192. Photos this close are grouped regardless of time. Higher = looser. Default 24.</small>
+      </label>
+      <label class="field">
+        <span>Burst match distance</span>
+        <input type="number" data-option="burst_threshold" min="0" max="192">
+        <small>Looser limit used only for photos taken within the burst window. Default 34.</small>
+      </label>
+      <label class="field">
+        <span>Burst window (seconds)</span>
+        <input type="number" data-option="burst_seconds" min="0" max="86400">
+        <small>Uses the camera's EXIF capture time; photos without one never use the burst rule. Default 120.</small>
+      </label>
+      <label class="field">
+        <span>Same-moment window (seconds)</span>
+        <input type="number" data-option="session_seconds" min="0" max="3600">
+        <small>Groups shots taken this close together even when pose, framing or lights changed, so you can pick the best pose. 0 turns it off. Default 15.</small>
+      </label>
+      <label class="field">
+        <span>Same-moment distance</span>
+        <input type="number" data-option="session_threshold" min="0" max="192">
+        <small>Loose visual limit for same-moment shots (unrelated photos average about 96). Default 100.</small>
+      </label>
+      <label class="field">
+        <span>Colour difference limit</span>
+        <input type="number" data-option="color_threshold" min="0" max="255">
+        <small>0-255. Lower splits groups whose colours differ. 255 turns the check off. Default 30.</small>
+      </label>
+      <label class="field check-field">
+        <input type="checkbox" data-option="prefer_faces">
+        <span>Rank by faces and posture</span>
+        <small>In groups with people, prefer shots where everyone is visible, facing the camera, eyes open, smiling and in focus.</small>
+      </label>
+      <label class="field check-field">
+        <input type="checkbox" data-option="match_rotations">
+        <span>Match rotated copies</span>
+        <small>Also groups copies that were rotated by 90/180/270 degrees.</small>
+      </label>
+      <label class="field check-field">
+        <input type="checkbox" data-option="detect_faces">
+        <span>Detect faces while scanning</span>
+        <small>Needed for face/posture ranking. Turning it back on requires a rescan.</small>
+      </label>
+      <div class="settings-actions">
+        <button type="button" id="applySettingsBtn" class="primary">Apply and regroup</button>
+        <span>Regrouping uses the existing scan, so no rescan is needed.</span>
+      </div>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <div id="notices"></div>
+    <div class="controls">
+      <input id="searchBox" type="search" placeholder="Filter by filename or path">
+      <select id="typeFilter" aria-label="Group type">
+        <option value="all">All groups</option>
+        <option value="exact">Exact copies only</option>
+        <option value="similar">Similar only</option>
+        <option value="moment">Same moment only</option>
+        <option value="people">Groups with people</option>
+      </select>
+      <select id="decisionFilter" aria-label="Review status">
+        <option value="all">Any review status</option>
+        <option value="undecided">Not reviewed yet</option>
+        <option value="progress">Partly reviewed</option>
+        <option value="done">Fully reviewed</option>
+        <option value="nokeep">Every photo marked Move</option>
+      </select>
+      <button type="button" id="acceptExactBtn" title="For exact-copy groups you have not touched: keep one, move the identical copies">Accept all exact copies</button>
+    </div>
+    <div class="pager" id="pagerTop"></div>
+    <div id="groups"></div>
+    <div class="pager" id="pagerBottom"></div>
+  </main>
+
+  <div class="lightbox" id="lightbox" hidden>
+    <div class="lb-bar">
+      <div class="lb-text">
+        <div class="lb-title" id="lbTitle"></div>
+        <div class="lb-info" id="lbInfo"></div>
+        <div class="notes" id="lbNotes"></div>
+      </div>
+      <button type="button" id="lbPrev" title="Previous (Left arrow)">&lsaquo; Prev</button>
+      <button type="button" id="lbKeep" class="toggle" title="Keep (K)">&check; Keep</button>
+      <button type="button" id="lbMove" class="toggle" title="Move (M)">&rarr; Move</button>
+      <button type="button" id="lbNext" title="Next (Right arrow)">Next &rsaquo;</button>
+      <button type="button" id="lbClose" title="Close (Esc)">Close</button>
+    </div>
+    <div class="lb-stage" id="lbStage"><img id="lbImg" alt=""></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

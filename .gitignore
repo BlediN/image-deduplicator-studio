@@ -9,6 +9,9 @@ venv/
 # Generated review data (index + thumbnails)
 _photo_review/
 
+# App logs
+logs/
+
 # Editor / OS
 .vscode/
 .idea/
