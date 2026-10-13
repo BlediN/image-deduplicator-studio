@@ -824,6 +824,11 @@ HTML = r"""<!doctype html>
       return { keep, move, undecided: group.files.length - keep - move };
     }
 
+    // Untouched = no marks except the automatic Keep on the best shot.
+    function isUntouched(group) {
+      return group.files.every((file) => !statusMap.has(file.id) || (file.id === group.suggested_id && statusMap.get(file.id) === "keep"));
+    }
+
     function markCounts() {
       let keep = 0;
       let move = 0;
@@ -923,9 +928,9 @@ HTML = r"""<!doctype html>
         if (type === "moment" && group.kind !== "moment") return false;
         if (type === "people" && !group.has_faces) return false;
         const progress = groupProgress(group);
-        const decided = progress.keep + progress.move;
-        if (decision === "undecided" && decided > 0) return false;
-        if (decision === "progress" && (decided === 0 || progress.undecided === 0)) return false;
+        const untouched = isUntouched(group);
+        if (decision === "undecided" && !untouched) return false;
+        if (decision === "progress" && (untouched || progress.undecided === 0)) return false;
         if (decision === "done" && progress.undecided > 0) return false;
         if (decision === "nokeep" && progress.move !== group.files.length) return false;
         return true;
@@ -1154,7 +1159,7 @@ HTML = r"""<!doctype html>
     }
 
     function acceptExact() {
-      const groups = state.groups.filter((group) => group.kind === "exact" && group.files.every((file) => !statusMap.has(file.id)));
+      const groups = state.groups.filter((group) => group.kind === "exact" && isUntouched(group));
       groups.forEach((group) => group.files.forEach((file) => statusMap.set(file.id, file.id === group.suggested_id ? "keep" : "move")));
       render();
       scheduleSave();
@@ -1883,6 +1888,7 @@ def scan(library: Library, options: ScanOptions, force: bool = False, progress: 
     payload["grouping"] = build_groups(images, options, payload)
     with INDEX_LOCK:
         library.save_index(payload)
+        keep_best_shots(library, payload["grouping"]["groups"])
     return payload
 
 
@@ -2160,6 +2166,18 @@ def build_groups(images: list[dict[str, Any]], options: ScanOptions, index: dict
     return {"signature": grouping_signature(options), "groups": groups, "summary": summary}
 
 
+def keep_best_shots(library: Library, groups: list[dict[str, Any]]) -> None:
+    """Mark the suggested best shot Keep in every group you have not touched yet."""
+    status = library.load_decisions()
+    changed = False
+    for group in groups:
+        if not any(file["id"] in status for file in group["files"]):
+            status[group["suggested_id"]] = "keep"
+            changed = True
+    if changed:
+        library.save_decisions(status)
+
+
 # ---------------------------------------------------------------------------
 # Moving and undo
 # ---------------------------------------------------------------------------
@@ -2376,6 +2394,7 @@ class App:
                 grouping = build_groups(index.get("images", []), self.options, index)
                 index["grouping"] = grouping
                 library.save_index(index)
+                keep_best_shots(library, grouping["groups"])
             state.update(
                 scanned=True,
                 groups=grouping["groups"],
