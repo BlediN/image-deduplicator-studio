@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import APP_HOME, SETTINGS_FILE, MOVE_DIR_NAME, IMAGE_EXTENSIONS, SKIP_DIR_NAMES, ScanOptions
+
+logger = logging.getLogger(__name__)
 
 
 class ApiError(Exception):
@@ -27,7 +30,8 @@ def read_json(path: Path, default: Any) -> Any:
         return default
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        logger.error("Cannot read %s (%s: %s). Using defaults instead.", path, type(exc).__name__, exc)
         return default
 
 
@@ -42,6 +46,7 @@ def write_json(path: Path, payload: Any) -> None:
         except PermissionError:
             # Sync clients and virus scanners can hold the file for a moment.
             if attempt == 4:
+                logger.error("Cannot write %s: the file is locked by another program", path)
                 raise
             time.sleep(0.2)
 

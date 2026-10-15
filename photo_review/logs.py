@@ -6,6 +6,7 @@ import logging
 import os
 import platform
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
 from typing import TextIO
 
@@ -100,6 +101,14 @@ def setup_logging(debug: bool = False) -> None:
         if file_handler.stream.tell():
             file_handler.stream.write("\n" + RUN_SEPARATOR + "\n")  # mark where each run starts
         root.addHandler(file_handler)
+
+    def log_thread_crash(args: threading.ExceptHookArgs) -> None:
+        if issubclass(args.exc_type, SystemExit):
+            return
+        thread = args.thread.name if args.thread else "unknown"
+        root.critical("Uncaught error in thread %s", thread, exc_info=(args.exc_type, args.exc_value, args.exc_traceback))
+
+    threading.excepthook = log_thread_crash
 
     root.info(
         "Starting (debug=%s) | Python %s | %s | OpenCV %s | log file %s",

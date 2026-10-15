@@ -6,9 +6,11 @@ import io
 import json
 import logging
 import mimetypes
+import os
 import posixpath
 import re
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -21,13 +23,15 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
-from .config import INDEX_VERSION, BROWSER_FORMATS, ScanOptions, options_from_dict, grouping_signature
+from .config import INDEX_VERSION, BROWSER_FORMATS, LOG_FILE, ScanOptions, options_from_dict, grouping_signature
 from .storage import ApiError, is_inside, save_settings, INDEX_LOCK, Library
 from .analysis import scan, to_rgb
 from .grouping import build_groups, keep_best_shots
 from .moves import move_files, undo_last_move
 
 logger = logging.getLogger(__name__)
+client_logger = logging.getLogger("photo_review.browser")
+CLIENT_LOG_LEVELS = {"info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_FILES = {
@@ -36,11 +40,36 @@ STATIC_FILES = {
 }
 
 
+def point_tk_at_base_python() -> bool:
+    """Set TCL_LIBRARY/TK_LIBRARY to the base Python's Tcl/Tk scripts. Returns True if anything was set.
+
+    Python 3.13.0 virtual environments on Windows look for Tcl/Tk next to the venv
+    and fail with "Can't find a usable init.tcl" (fixed in 3.13.1).
+    """
+    tcl_root = Path(sys.base_prefix) / "tcl"
+    changed = False
+    for variable, pattern, marker in (("TCL_LIBRARY", "tcl[0-9].*", "init.tcl"), ("TK_LIBRARY", "tk[0-9].*", "tk.tcl")):
+        if os.environ.get(variable):
+            continue
+        found = sorted(folder for folder in tcl_root.glob(pattern) if (folder / marker).is_file())
+        if found:
+            os.environ[variable] = str(found[-1])
+            changed = True
+    return changed
+
+
 def pick_folder(initial: str) -> str | None:
     import tkinter as tk
     from tkinter import filedialog
 
-    root = tk.Tk()
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:
+        if not point_tk_at_base_python():
+            raise
+        logger.info("Tk could not find its library files (%s); retrying with TCL_LIBRARY=%s", str(exc).splitlines()[0],
+                    os.environ.get("TCL_LIBRARY"))
+        root = tk.Tk()
     root.withdraw()
     try:
         root.attributes("-topmost", True)
@@ -194,7 +223,10 @@ class ReviewHandler(BaseHTTPRequestHandler):
             if not self.token_ok():
                 self.send_json({"error": "Session expired. Reload the page."}, HTTPStatus.FORBIDDEN)
             elif path == "/api/state":
-                self.send_json(self.app.current_state())
+                try:
+                    self.send_json(self.app.current_state())
+                except Exception as exc:
+                    self.send_unexpected("GET", path, exc)
             elif path == "/api/job":
                 self.send_json(self.app.job_snapshot())
             else:
@@ -215,8 +247,16 @@ class ReviewHandler(BaseHTTPRequestHandler):
             data = self.read_body()
             self.send_json(self.route_post(path, data))
         except ApiError as exc:
-            logger.info("API error on %s: %s", path, exc)
+            logger.warning("API error on %s: %s", path, exc)
             self.send_json({"error": str(exc)}, exc.status)
+        except Exception as exc:
+            self.send_unexpected("POST", path, exc)
+
+    def send_unexpected(self, method: str, path: str, exc: Exception) -> None:
+        """Log a bug or I/O failure with its traceback and tell the browser where to find it."""
+        logger.exception("Unexpected error on %s %s", method, path)
+        message = f"Unexpected error: {type(exc).__name__}: {exc}. Details are in the log file {LOG_FILE}"
+        self.send_json({"error": message}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def route_post(self, path: str, data: dict[str, Any]) -> Any:
         app = self.app
@@ -258,6 +298,11 @@ class ReviewHandler(BaseHTTPRequestHandler):
         if path == "/api/undo":
             app.require_idle()
             return undo_last_move(app.require_library())
+        if path == "/api/client-log":
+            # Errors raised in the browser (script bugs, lost connection) so they end up in the log file too.
+            level = CLIENT_LOG_LEVELS.get(str(data.get("level")), logging.ERROR)
+            client_logger.log(level, "%s", str(data.get("message") or "")[:4000])
+            return {"ok": True}
         raise ApiError("Not found", HTTPStatus.NOT_FOUND)
 
     def read_body(self) -> dict[str, Any]:
@@ -293,7 +338,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
             return
         try:
             data = (library.thumb_dir / f"{ident}.jpg").read_bytes()
-        except OSError:
+        except OSError as exc:
+            logger.warning("Cannot read thumbnail %s: %s", ident, exc)
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_bytes(data, "image/jpeg", cache=True)
@@ -306,6 +352,7 @@ class ReviewHandler(BaseHTTPRequestHandler):
             return
         source = (library.root / item["rel_path"]).resolve()
         if not is_inside(source, library.root) or not source.exists():
+            logger.warning("Cannot show %s: the file is missing or outside the folder", item["rel_path"])
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -320,7 +367,8 @@ class ReviewHandler(BaseHTTPRequestHandler):
                 buffer = io.BytesIO()
                 image.save(buffer, "JPEG", quality=90)
                 data, mime = buffer.getvalue(), "image/jpeg"
-        except OSError:
+        except OSError as exc:
+            logger.warning("Cannot show %s: %s", item["rel_path"], exc)
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         self.send_bytes(data, mime, cache=True)

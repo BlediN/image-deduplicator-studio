@@ -103,7 +103,14 @@
         <option value="done">Fully reviewed</option>
         <option value="nokeep">Every photo marked Move</option>
       </select>
+    </div>
+    <div class="bulk-bar">
+      <span class="bulk-label">All groups:</span>
+      <button type="button" id="bulkSuggestBtn" title="In every group: keep the best shot and mark the others Move. Replaces marks you already made.">Keep best, move rest</button>
+      <button type="button" id="bulkMoveRestBtn" title="In every group: mark every photo not marked Keep as Move. Groups with nothing kept are marked Move entirely.">Move all not kept</button>
       <button type="button" id="acceptExactBtn" title="For exact-copy groups you have not touched: keep one, move the identical copies">Accept all exact copies</button>
+      <button type="button" id="undoMarksBtn" disabled title="Undo the last change to the Keep/Move marks (Ctrl+Z)">Undo marks</button>
+      <span class="bulk-note">Marking only. Nothing is moved until you press Move marked.</span>
     </div>
     <div class="pager" id="pagerTop"></div>
     <div id="groups"></div>

@@ -8,6 +8,9 @@ let page = 0;
 let saveTimer = null;
 let pollTimer = null;
 let lb = null;
+// Snapshots of the marks taken before each change, so mistakes can be undone.
+const MAX_HISTORY = 50;
+let history = [];
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,8 +36,30 @@ async function api(path, body) {
   } catch (err) {
     data = null;
   }
-  if (!response.ok) throw new Error((data && data.error) || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error((data && data.error) || `Request failed (${response.status})`);
+    error.logged = true; // the server already wrote it to the log file
+    throw error;
+  }
   return data;
+}
+
+// Send browser-side errors to the server so they land in the log file.
+let clientLogsLeft = 50;
+function logToServer(level, message) {
+  if (clientLogsLeft <= 0) return;
+  clientLogsLeft -= 1;
+  fetch("/api/client-log", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Review-Token": TOKEN },
+    body: JSON.stringify({ level, message: String(message) }),
+  }).catch(() => {}); // the server is unreachable, nothing more we can do
+}
+
+function logError(context, err) {
+  if (err && err.logged) return;
+  const detail = err && err.stack ? err.stack : String(err && err.message ? err.message : err);
+  logToServer("error", `${context}: ${detail}`);
 }
 
 function formatBytes(bytes) {
@@ -90,6 +115,7 @@ function markCounts() {
 function applyState(data) {
   state = data;
   statusMap = new Map(Object.entries(data.decisions || {}));
+  history = [];
   groupById = new Map();
   fileLookup = new Map();
   data.groups.forEach((group, index) => {
@@ -147,6 +173,15 @@ function updateStats() {
   $("moveBtn").textContent = `Move marked (${counts.move})`;
   $("moveBtn").disabled = counts.move === 0;
   $("undoBtn").disabled = !state.can_undo;
+  updateBulkButtons();
+}
+
+function updateBulkButtons() {
+  const ready = Boolean(state && state.scanned && state.groups.length);
+  ["bulkSuggestBtn", "bulkMoveRestBtn", "acceptExactBtn"].forEach((id) => { $(id).disabled = !ready; });
+  const last = history[history.length - 1];
+  $("undoMarksBtn").disabled = !last;
+  $("undoMarksBtn").title = last ? `Undo: ${last.label} (Ctrl+Z)` : "Undo the last change to the Keep/Move marks (Ctrl+Z)";
 }
 
 function renderNotices() {
@@ -232,7 +267,7 @@ function groupHtml(group) {
         </div>
         <div class="group-tools">
           <button type="button" data-action="suggest" data-group-id="${group.id}" title="Keep the best shot and move the others">Keep best, move rest</button>
-          <button type="button" data-action="move-rest" data-group-id="${group.id}" ${progress.keep ? "" : "disabled"} title="Move every photo not marked Keep">Move all not kept</button>
+          <button type="button" data-action="move-rest" data-group-id="${group.id}" title="Mark every photo not marked Keep as Move. If nothing is kept, all photos are marked Move.">Move all not kept</button>
           <button type="button" data-action="keep-all" data-group-id="${group.id}">Keep all</button>
           <button type="button" data-action="clear" data-group-id="${group.id}">Clear</button>
         </div>
@@ -296,28 +331,107 @@ function changed(groups) {
   if (lb) renderLightbox();
 }
 
+function remember(label) {
+  history.push({ label, marks: new Map(statusMap) });
+  if (history.length > MAX_HISTORY) history.shift();
+}
+
+function undoMarks() {
+  const entry = history.pop();
+  if (!entry) {
+    toast("Nothing to undo.");
+    return;
+  }
+  statusMap = entry.marks;
+  render();
+  scheduleSave();
+  if (lb) renderLightbox();
+  toast(`Undone: ${entry.label}.`);
+}
+
 function toggleStatus(id, value) {
+  const entry = fileLookup.get(id);
+  remember(`${value === "keep" ? "Keep" : "Move"} on ${entry ? entry.file.name : "a photo"}`);
   if (statusMap.get(id) === value) statusMap.delete(id);
   else statusMap.set(id, value);
-  const entry = fileLookup.get(id);
   changed(entry ? [entry.group] : []);
 }
 
-function groupAction(group, action) {
+const ACTION_LABELS = {
+  suggest: "Keep best, move rest",
+  "move-rest": "Move all not kept",
+  "keep-all": "Keep all",
+  clear: "Clear",
+};
+
+// Returns true when any mark in the group changed.
+function applyGroupAction(group, action) {
+  let touched = false;
+  const set = (id, value) => {
+    if (statusMap.get(id) === value) return;
+    if (value) statusMap.set(id, value);
+    else statusMap.delete(id);
+    touched = true;
+  };
   group.files.forEach((file) => {
-    if (action === "suggest") statusMap.set(file.id, file.id === group.suggested_id ? "keep" : "move");
-    else if (action === "keep-all") statusMap.set(file.id, "keep");
-    else if (action === "move-rest" && statusMap.get(file.id) !== "keep") statusMap.set(file.id, "move");
-    else if (action === "clear") statusMap.delete(file.id);
+    if (action === "suggest") set(file.id, file.id === group.suggested_id ? "keep" : "move");
+    else if (action === "keep-all") set(file.id, "keep");
+    else if (action === "move-rest" && statusMap.get(file.id) !== "keep") set(file.id, "move");
+    else if (action === "clear") set(file.id, undefined);
   });
+  return touched;
+}
+
+function groupAction(group, action) {
+  remember(`${ACTION_LABELS[action] || action} in group ${group.number}`);
+  if (!applyGroupAction(group, action)) {
+    history.pop();
+    return;
+  }
   changed([group]);
+}
+
+// Runs a group action on many groups as one undoable step.
+function bulkAction(groups, action, label) {
+  remember(label);
+  const count = groups.filter((group) => applyGroupAction(group, action)).length;
+  if (!count) {
+    history.pop();
+    return 0;
+  }
+  render();
+  scheduleSave();
+  if (lb) renderLightbox();
+  return count;
+}
+
+function bulkSuggest() {
+  const count = bulkAction(state.groups, "suggest", "Keep best, move rest in all groups");
+  toast(count
+    ? `Kept the best shot and marked the rest Move in ${count} groups. Use Undo marks to revert.`
+    : "Every group already has the best shot kept and the rest marked Move.");
+}
+
+function bulkMoveRest() {
+  const nothingKept = state.groups.filter((group) => groupProgress(group).keep === 0).length;
+  const count = bulkAction(state.groups, "move-rest", "Move all not kept in all groups");
+  if (!count) {
+    toast("Nothing to mark: every photo is already Keep or Move.");
+    return;
+  }
+  let message = `Marked every photo not kept as Move in ${count} groups.`;
+  if (nothingKept) message += ` ${nothingKept} group(s) had nothing kept, so all their photos are marked Move.`;
+  toast(`${message} Use Undo marks to revert.`);
 }
 
 function scheduleSave() {
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
     saveTimer = null;
-    saveDecisions().catch((err) => toast(`Could not save marks: ${err.message}`));
+    saveDecisions().catch((err) => {
+      logError("Saving marks", err);
+      toast(`Could not save marks: ${err.message}`);
+    });
   }, 500);
 }
 
@@ -360,6 +474,7 @@ async function pollJob() {
   try {
     job = await api("/api/job");
   } catch (err) {
+    logError("Checking scan progress", err);
     pollTimer = window.setTimeout(pollJob, 2000);
     return;
   }
@@ -407,10 +522,8 @@ async function applySettings() {
 
 function acceptExact() {
   const groups = state.groups.filter((group) => group.kind === "exact" && isUntouched(group));
-  groups.forEach((group) => group.files.forEach((file) => statusMap.set(file.id, file.id === group.suggested_id ? "keep" : "move")));
-  render();
-  scheduleSave();
-  toast(groups.length ? `Marked ${groups.length} exact-copy groups: one kept, copies to move.` : "No untouched exact-copy groups left.");
+  const count = bulkAction(groups, "suggest", "Accept all exact copies");
+  toast(count ? `Marked ${count} exact-copy groups: one kept, copies to move.` : "No untouched exact-copy groups left.");
 }
 
 async function moveMarked() {
@@ -471,7 +584,10 @@ function stepLightbox(delta) {
   renderLightbox();
 }
 
-const report = (promise) => promise.catch((err) => toast(err.message));
+const report = (promise) => promise.catch((err) => {
+  logError("Action failed", err);
+  toast(err.message);
+});
 
 $("groups").addEventListener("click", (event) => {
   const target = event.target.closest("[data-action]");
@@ -508,6 +624,13 @@ document.addEventListener("keydown", (event) => {
   event.preventDefault();
 });
 
+document.addEventListener("keydown", (event) => {
+  if (!(event.ctrlKey || event.metaKey) || event.shiftKey || event.key.toLowerCase() !== "z") return;
+  if (event.target.closest("input, select, textarea")) return; // leave text undo alone
+  event.preventDefault();
+  undoMarks();
+});
+
 ["searchBox", "typeFilter", "decisionFilter"].forEach((id) => {
   $(id).addEventListener(id === "searchBox" ? "input" : "change", () => {
     page = 0;
@@ -525,6 +648,9 @@ $("settingsBtn").addEventListener("click", () => {
 });
 $("applySettingsBtn").addEventListener("click", () => report(applySettings()));
 $("acceptExactBtn").addEventListener("click", acceptExact);
+$("bulkSuggestBtn").addEventListener("click", bulkSuggest);
+$("bulkMoveRestBtn").addEventListener("click", bulkMoveRest);
+$("undoMarksBtn").addEventListener("click", undoMarks);
 $("moveBtn").addEventListener("click", () => report(moveMarked()));
 $("undoBtn").addEventListener("click", () => report(undoMove()));
 $("lbPrev").addEventListener("click", () => stepLightbox(-1));
@@ -546,7 +672,13 @@ window.addEventListener("beforeunload", () => {
   });
 });
 
+window.addEventListener("error", (event) => {
+  logError(`Script error at ${event.filename}:${event.lineno}`, event.error || event.message);
+});
+window.addEventListener("unhandledrejection", (event) => logError("Unhandled promise rejection", event.reason));
+
 loadState().catch((err) => {
+  logError("Loading groups", err);
   $("groups").innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
   $("subtitle").textContent = "Could not load groups.";
 });

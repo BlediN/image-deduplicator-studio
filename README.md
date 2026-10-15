@@ -39,8 +39,9 @@ python -m photo_review
 1. **Choose folder...** (or type a path) and press **Scan**. Rescans are fast: unchanged photos are cached.
 2. Go through the groups. Each one shows the photos side by side with the **★ Best shot** already marked **Keep**.
    - **Keep best, move rest**: keep the suggested shot, mark the others Move.
-   - **Move all not kept**: mark everything you haven't kept as Move.
-   - **Accept all exact copies**: one click for every exact-copy group you haven't touched.
+   - **Move all not kept**: mark everything you haven't kept as Move. If nothing in the group is kept, every photo is marked Move.
+   - The **All groups** bar runs these on every group at once: **Keep best, move rest**, **Move all not kept** and **Accept all exact copies** (for every exact-copy group you haven't touched).
+   - **Undo marks** (or **Ctrl+Z**) reverts the last marking change, one step at a time, including these bulk actions. It only changes marks; **Undo last move** is what puts moved files back.
    - Click a photo to open it full size. Use the arrow keys to browse, **K** to toggle Keep, **M** to toggle Move, and **Esc** to close.
 3. Press **Move marked (N)**. The files go to `_marked_for_delete` inside the scanned folder. Check that folder, then delete it yourself when you're sure.
 
@@ -99,7 +100,7 @@ Get-Content logs\photo_review.log -Wait -Tail 20
 
 | | Terminal | Log file |
 | --- | --- | --- |
-| Normal | Warnings and errors only | Startup info, scans, settings changes, moves and undos, unreadable files, failed requests, crashes with tracebacks |
+| Normal | Warnings and errors only | Startup info, scans, settings changes, moves and undos, unreadable files, failed requests, unexpected server errors and crashes with tracebacks, corrupt or locked data files, photos that cannot be shown, and errors from the browser page |
 | `--debug` | Everything | Everything, plus every request with its timing, cache hits, each moved file and tracebacks for unreadable files |
 
 In the terminal, log lines are colored by level (grey debug, cyan info, yellow warnings, red errors), and tracebacks are indented under the entry they belong to. Colors switch off automatically when output is redirected. Set `NO_COLOR=1` to turn them off, or `FORCE_COLOR=1` to force them on. In the log file, a dashed line marks the start of each run.

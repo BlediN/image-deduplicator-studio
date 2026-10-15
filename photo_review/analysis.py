@@ -359,7 +359,7 @@ def scan(library: Library, options: ScanOptions, force: bool = False, progress: 
             stat = path.stat()
         except OSError as exc:
             errors.append({"rel_path": relative, "error": str(exc)})
-            logger.info("Cannot read %s: %s", relative, exc)
+            logger.warning("Cannot read %s: %s", relative, exc)
             continue
         cached = previous_by_path.get(relative)
         if (
@@ -389,7 +389,7 @@ def scan(library: Library, options: ScanOptions, force: bool = False, progress: 
                 except Exception as exc:  # one unreadable file must not stop the scan
                     relative = library.rel(futures[future])
                     errors.append({"rel_path": relative, "error": f"{type(exc).__name__}: {exc}"})
-                    logger.info("Cannot analyze %s: %s: %s", relative, type(exc).__name__, exc,
+                    logger.warning("Cannot analyze %s: %s: %s", relative, type(exc).__name__, exc,
                                 exc_info=logger.isEnabledFor(logging.DEBUG))
                 report("Analyzing photos", done, len(todo))
     images.sort(key=lambda item: item["rel_path"].lower())
